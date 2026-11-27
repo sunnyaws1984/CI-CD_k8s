@@ -18,6 +18,23 @@ pipeline {
             }
         }
 
+        stage('Install Python') {
+            steps {
+                sh '''
+                    echo "Installing Python on Jenkins Agent..."
+
+                    apt-get update
+                    apt-get install -y python3 python3-pip python3-venv
+
+                    echo "Python version:"
+                    python3 --version
+
+                    echo "Pip version:"
+                    python3 -m pip --version
+                '''
+            }
+        }        
+
         stage('Install Dependencies') {
             steps {
                 dir('fastapi-cicd-project') {

@@ -326,3 +326,14 @@ Copy the token and save it in Jenkins.
          ID	kubeconfig-credentials
          Description	Kubernetes cluster access
 ```
+
+### Jenkins Pipeline configuration tells it about GitHub
+
+```bash
+Open Jenkins via port forward command:
+kubectl port-forward svc/jenkins 8080:8080 -n jenkins
+
+ Definition → Pipeline script from SCM
+ CI-CD_demo_fastapi - Display Name
+
+```
