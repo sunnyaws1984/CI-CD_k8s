@@ -314,7 +314,7 @@ Copy the token and save it in Jenkins.
    Manage Jenkins → Credentials → Global → Add Credentials
    
    eg:
-      Kind: Username with password
+      Kind: Username with password (system)
             PASSWORD :Paste your DockerHub access token
             ID: dockerhub-credentials
    
@@ -335,5 +335,8 @@ kubectl port-forward svc/jenkins 8080:8080 -n jenkins
 
  Definition → Pipeline script from SCM
  CI-CD_demo_fastapi - Display Name
+ Repos - https://github.com/sunnyaws1984/CI-CD_k8s.git
+ Branch */develop
+ Script Path fastapi-cicd-project/Jenkinsfile
 
 ```

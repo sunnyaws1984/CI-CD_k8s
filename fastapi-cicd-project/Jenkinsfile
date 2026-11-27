@@ -46,6 +46,11 @@ pipeline {
             steps {
                 container('kubectl') {
                     sh '''
+                        # First run only: create Deployment and Service
+                        kubectl get deployment html-demo -n ${K8S_NAMESPACE} >/dev/null 2>&1 || \
+                          kubectl apply -f fastapi-cicd-project/k8s/html-demo.yaml -n ${K8S_NAMESPACE}
+
+                        # Every run: roll out the image built above
                         kubectl set image deployment/html-demo \
                           web=${IMAGE_NAME}:${BUILD_NUMBER} \
                           -n ${K8S_NAMESPACE}
