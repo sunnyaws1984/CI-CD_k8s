@@ -4,7 +4,7 @@ pipeline {
 
     environment {
         APP_NAME = "fastapi-cicd-demo"
-        DOCKER_USER = "YOUR_DOCKERHUB_USERNAME"
+        DOCKER_USER = "sunnyaws1984"
         IMAGE_NAME = "${DOCKER_USER}/${APP_NAME}"
         K8S_NAMESPACE = "default"
     }
@@ -20,39 +20,45 @@ pipeline {
 
         stage('Install Dependencies') {
             steps {
-                sh 'python3 -m pip install -r requirements.txt'
+                dir('fastapi-cicd-project') {
+                    sh 'python3 -m pip install -r requirements.txt'
+                }
             }
         }
 
         stage('Test Application') {
             steps {
-                sh 'python3 -c "from app import app; print(app.title)"'
+                dir('fastapi-cicd-project') {
+                    sh 'python3 -c "from app import app; print(app.title)"'
+                }
             }
         }
 
         stage('Build Docker Image') {
             steps {
-                sh '''
-                    docker build \
-                    -t ${IMAGE_NAME}:${BUILD_NUMBER} .
-                '''
+                dir('fastapi-cicd-project') {
+                    sh '''
+                        docker build -t ${IMAGE_NAME}:${BUILD_NUMBER} .
+                    '''
+                }
             }
         }
-
         stage('Push Docker Image') {
             steps {
                 withCredentials([
                     usernamePassword(
                         credentialsId: 'dockerhub-credentials',
-                        usernameVariable: 'DOCKER_USER',
-                        passwordVariable: 'DOCKER_PASS'
+                        usernameVariable: 'DH_USER',
+                        passwordVariable: 'DH_TOKEN'
                     )
                 ]) {
                     sh '''
-                        echo "$DOCKER_PASS" | docker login \
-                        -u "$DOCKER_USER" --password-stdin
+                        echo "$DH_TOKEN" | docker login \
+                        -u "$DH_USER" --password-stdin
 
                         docker push ${IMAGE_NAME}:${BUILD_NUMBER}
+
+                        docker logout
                     '''
                 }
             }
@@ -60,23 +66,37 @@ pipeline {
 
         stage('Deploy to Kubernetes') {
             steps {
-                sh '''
-                    kubectl set image deployment/fastapi-app \
-                    fastapi-container=${IMAGE_NAME}:${BUILD_NUMBER} \
-                    -n ${K8S_NAMESPACE}
+                withCredentials([
+                    file(
+                        credentialsId: 'kubeconfig-credentials',
+                        variable: 'KUBECONFIG'
+                    )
+                ]) {
+                    sh '''
+                        kubectl set image deployment/fastapi-app \
+                        fastapi-container=${IMAGE_NAME}:${BUILD_NUMBER} \
+                        -n ${K8S_NAMESPACE}
 
-                    kubectl rollout status deployment/fastapi-app \
-                    -n ${K8S_NAMESPACE}
-                '''
+                        kubectl rollout status deployment/fastapi-app \
+                        -n ${K8S_NAMESPACE}
+                    '''
+                }
             }
         }
 
         stage('Verify Deployment') {
             steps {
-                sh '''
-                    kubectl get pods -n ${K8S_NAMESPACE}
-                    kubectl get services -n ${K8S_NAMESPACE}
-                '''
+                withCredentials([
+                    file(
+                        credentialsId: 'kubeconfig-credentials',
+                        variable: 'KUBECONFIG'
+                    )
+                ]) {
+                    sh '''
+                        kubectl get pods -n ${K8S_NAMESPACE}
+                        kubectl get services -n ${K8S_NAMESPACE}
+                    '''
+                }
             }
         }
     }

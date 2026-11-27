@@ -303,8 +303,26 @@ python -m pip install -r requirements.txt
 python -m uvicorn app:app --reload
 ```
 
-## Disclaimer
+## Setup Docker Credentials
 
-This is a sample educational lab. Adapt the manifests, credentials,
-image names, resource limits, and deployment settings before using the
-workflow in a production environment.
+```bash
+Log in to DockerHub.
+Go to Account Settings.
+Select Personal access tokens.
+Generate a new token with appropriate read/write permissions.
+Copy the token and save it in Jenkins.
+   Manage Jenkins → Credentials → Global → Add Credentials
+   
+   eg:
+      Kind: Username with password
+            PASSWORD :Paste your DockerHub access token
+            ID: dockerhub-credentials
+   
+   run sh -x export-kubeconfig.sh
+
+   eg:
+      Kind	Secret file
+         File	Your kubeconfig file
+         ID	kubeconfig-credentials
+         Description	Kubernetes cluster access
+```
