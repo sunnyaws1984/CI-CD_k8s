@@ -1,4 +1,3 @@
-
 #!/usr/bin/env bash
 
 set -Eeuo pipefail
@@ -6,6 +5,7 @@ set -Eeuo pipefail
 # ==================================================
 # Jenkins Installation on Docker Desktop Kubernetes
 # Official Jenkins Helm Chart
+# Agent pods come with all CI/CD tools preinstalled
 # ==================================================
 
 NAMESPACE="jenkins"
@@ -14,8 +14,18 @@ CHART="jenkins/jenkins"
 HELM_REPO="https://charts.jenkins.io"
 
 JENKINS_ADMIN="admin"
-JENKINS_PORT="32000"
 JENKINS_HOME_SIZE="8Gi"
+
+# Deploy target for pipelines
+DEPLOY_NAMESPACE="default"
+
+# Agent pod: jnlp container + tool containers (pinned versions)
+AGENT_IMAGE_REPO="jenkins/inbound-agent"
+AGENT_IMAGE_TAG="3395.v6e5377b_0fb_3c-5-jdk25"
+KANIKO_IMAGE="gcr.io/kaniko-project/executor:debug"   # builds + pushes images
+KUBECTL_IMAGE="alpine/k8s:1.31.2"                     # kubectl, helm, etc.
+AGENT_SA="jenkins-agent"                              # ServiceAccount for agent pods
+AGENT_LABEL="ci-agent"                                # use: agent { label 'ci-agent' }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -94,7 +104,44 @@ mkdir -p "${HELM_DIR}"
 mkdir -p "${CHART_DIR}"
 
 # --------------------------------------------------
-# 5. Generate admin password
+# 5. Pre-load tool images into the cluster node
+#    (avoids flaky Docker Hub pulls during builds)
+# --------------------------------------------------
+
+echo "[INFO] Pre-loading agent and tool images..."
+
+NODE_CONTAINERS="$(docker ps --format '{{.Names}}' | grep -E 'control-plane|worker' || true)"
+
+preload_image() {
+    local image="$1"
+
+    echo "[INFO]  -> ${image}"
+
+    if ! docker pull "${image}" >/dev/null 2>&1; then
+        echo "[WARNING] Could not pull ${image}; the cluster will pull it itself."
+        return 0
+    fi
+
+    if [[ -z "${NODE_CONTAINERS}" ]]; then
+        echo "[WARNING] No cluster node container found; skipping load."
+        return 0
+    fi
+
+    for node in ${NODE_CONTAINERS}; do
+        if docker save "${image}" | docker exec -i "${node}" ctr -n k8s.io images import - >/dev/null 2>&1; then
+            echo "[INFO]     loaded into ${node}"
+        else
+            echo "[WARNING]  could not load into ${node}; the cluster will pull it itself."
+        fi
+    done
+}
+
+preload_image "${AGENT_IMAGE_REPO}:${AGENT_IMAGE_TAG}"
+preload_image "${KANIKO_IMAGE}"
+preload_image "${KUBECTL_IMAGE}"
+
+# --------------------------------------------------
+# 6. Generate admin password
 # --------------------------------------------------
 
 if [[ ! -f "${PASSWORD_FILE}" ]]; then
@@ -108,7 +155,7 @@ chmod 600 "${PASSWORD_FILE}"
 JENKINS_PASSWORD="$(tr -d '\r\n' < "${PASSWORD_FILE}")"
 
 # --------------------------------------------------
-# 6. Create namespace
+# 7. Create namespace
 # --------------------------------------------------
 
 echo "[INFO] Creating Jenkins namespace..."
@@ -117,7 +164,7 @@ kubectl create namespace "${NAMESPACE}" \
     --dry-run=client -o yaml | kubectl apply -f -
 
 # --------------------------------------------------
-# 7. Create admin Kubernetes Secret
+# 8. Create admin Kubernetes Secret
 # --------------------------------------------------
 
 echo "[INFO] Creating Jenkins admin Secret..."
@@ -129,7 +176,7 @@ kubectl create secret generic jenkins-admin-secret \
     --dry-run=client -o yaml | kubectl apply -f -
 
 # --------------------------------------------------
-# 8. Add Jenkins Helm repository
+# 9. Add Jenkins Helm repository
 # --------------------------------------------------
 
 echo "[INFO] Adding Jenkins Helm repository..."
@@ -139,7 +186,7 @@ helm repo add jenkins "${HELM_REPO}" --force-update
 helm repo update
 
 # --------------------------------------------------
-# 9. Download Jenkins chart locally
+# 10. Download Jenkins chart locally
 # --------------------------------------------------
 
 echo "[INFO] Downloading Jenkins Helm chart..."
@@ -158,10 +205,15 @@ fi
 echo "[SUCCESS] Jenkins chart downloaded."
 
 # --------------------------------------------------
-# 10. Generate Helm values.yaml
+# 11. Generate Helm values.yaml
 # --------------------------------------------------
 
 echo "[INFO] Generating Helm values.yaml..."
+
+KANIKO_REPO="${KANIKO_IMAGE%:*}"
+KANIKO_TAG="${KANIKO_IMAGE##*:}"
+KUBECTL_REPO="${KUBECTL_IMAGE%:*}"
+KUBECTL_TAG="${KUBECTL_IMAGE##*:}"
 
 cat > "${VALUES_FILE}" <<EOF
 controller:
@@ -179,9 +231,9 @@ controller:
 
   numExecutors: 0
 
-  serviceType: NodePort
+  # kind does not publish NodePorts to Windows, so use port-forward
+  serviceType: ClusterIP
   servicePort: 8080
-  nodePort: ${JENKINS_PORT}
 
   installPlugins:
     - kubernetes
@@ -203,12 +255,42 @@ persistence:
   enabled: true
   size: ${JENKINS_HOME_SIZE}
 
+# Dedicated ServiceAccount for agent pods (used by kubectl inside builds)
+serviceAccountAgent:
+  create: true
+  name: ${AGENT_SA}
+
 agent:
   enabled: true
+
+  image:
+    repository: ${AGENT_IMAGE_REPO}
+    tag: "${AGENT_IMAGE_TAG}"
+  imagePullPolicy: IfNotPresent
+
+  customJenkinsLabels:
+    - ${AGENT_LABEL}
+
+  # Tool containers added to every agent pod.
+  # Pipelines pick one with: container('kaniko') { ... }
+  additionalContainers:
+    - sideContainerName: kaniko
+      image:
+        repository: ${KANIKO_REPO}
+        tag: "${KANIKO_TAG}"
+      command: sleep
+      args: infinity
+
+    - sideContainerName: kubectl
+      image:
+        repository: ${KUBECTL_REPO}
+        tag: "${KUBECTL_TAG}"
+      command: sleep
+      args: infinity
 EOF
 
 # --------------------------------------------------
-# 11. Validate Helm configuration
+# 12. Validate Helm configuration
 # --------------------------------------------------
 
 echo "[INFO] Running Helm lint..."
@@ -226,7 +308,7 @@ helm template "${RELEASE_NAME}" "${LOCAL_CHART}" \
 echo "[SUCCESS] Helm configuration validated."
 
 # --------------------------------------------------
-# 12. Install Jenkins using Helm
+# 13. Install Jenkins using Helm
 # --------------------------------------------------
 
 echo "[INFO] Installing Jenkins..."
@@ -238,7 +320,7 @@ helm upgrade --install "${RELEASE_NAME}" "${LOCAL_CHART}" \
     --timeout 15m
 
 # --------------------------------------------------
-# 13. Wait for Jenkins StatefulSet
+# 14. Wait for Jenkins StatefulSet
 # --------------------------------------------------
 
 echo "[INFO] Waiting for Jenkins..."
@@ -248,7 +330,25 @@ kubectl rollout status statefulset/jenkins \
     --timeout=600s
 
 # --------------------------------------------------
-# 14. Display status
+# 15. Allow agent pods to deploy to the target namespace
+# --------------------------------------------------
+
+echo "[INFO] Granting deploy permissions in namespace '${DEPLOY_NAMESPACE}'..."
+
+kubectl create role jenkins-deployer \
+    --namespace "${DEPLOY_NAMESPACE}" \
+    --verb=get,list,watch,create,patch,update \
+    --resource=deployments,replicasets,pods,services \
+    --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl create rolebinding jenkins-deployer \
+    --namespace "${DEPLOY_NAMESPACE}" \
+    --role=jenkins-deployer \
+    --serviceaccount="${NAMESPACE}:${AGENT_SA}" \
+    --dry-run=client -o yaml | kubectl apply -f -
+
+# --------------------------------------------------
+# 16. Display status
 # --------------------------------------------------
 
 echo
@@ -273,33 +373,29 @@ echo "=========================================="
 echo " Jenkins Login Details"
 echo "=========================================="
 
-echo "URL      : http://localhost:${JENKINS_PORT}"
+echo "Step 1   : kubectl port-forward -n jenkins svc/jenkins 8080:8080"
+echo "URL      : http://localhost:8080"
 echo "Username : ${JENKINS_ADMIN}"
-echo "Password : ${PASSWORD_FILE}"
+echo "Password : (see file) ${PASSWORD_FILE}"
+
+echo
+echo "=========================================="
+echo " Pipeline Setup"
+echo "=========================================="
+
+echo "Agent label       : ${AGENT_LABEL}   ->  agent { label '${AGENT_LABEL}' }"
+echo "Tool containers   : kaniko, kubectl  ->  container('kaniko') { ... }"
+echo "Add in Jenkins    : credential 'dockerhub-credentials' (Docker Hub access token)"
 
 echo
 echo "=========================================="
 echo " Useful Commands"
 echo "=========================================="
 
-echo "View Pods:"
-echo "kubectl get pods -n jenkins"
-
-echo
-echo "View Logs:"
-echo "kubectl logs -n jenkins statefulset/jenkins"
-
-echo
-echo "View Helm release:"
-echo "helm list -n jenkins"
-
-echo
-echo "Port Forward:"
-echo "kubectl port-forward -n jenkins svc/jenkins 8080:8080"
-
-echo
-echo "Uninstall:"
-echo "helm uninstall jenkins -n jenkins"
+echo "View Pods   : kubectl get pods -n jenkins"
+echo "View Logs   : kubectl logs -n jenkins statefulset/jenkins"
+echo "Helm release: helm list -n jenkins"
+echo "Uninstall   : helm uninstall jenkins -n jenkins"
 
 echo
 echo "[SUCCESS] Jenkins deployment completed!"
