@@ -339,4 +339,7 @@ kubectl port-forward svc/jenkins 8080:8080 -n jenkins
  Branch */develop
  Script Path fastapi-cicd-project/Jenkinsfile
 
+Test :
+kubectl port-forward svc/html-demo 8081:80
+Open http://localhost:8081
 ```
